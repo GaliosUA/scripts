@@ -130,7 +130,7 @@
         }
 
         function showDictGoogle(s, r) {
-            let url = 'http://127.0.0.1:9001/api/translate/Google?s=' + encodeURI(s);
+            let url = '/api/translate/Google?s=' + encodeURI(s);
             if (r === true) url += '&r=1'; // reverse translate
             fetch(url)
                 .then(r => r.json())
@@ -203,7 +203,7 @@
                 _divTextTran.value = '';
                 if (s === '') return;
 
-                addTextItem(s);
+                addTextItem(s); // TODO: GPT
             }
             else if (e.key === 'Escape') {
                 _divTextTran.value = '';
@@ -241,7 +241,7 @@
     }
 
     function initSocket() {
-        _ws = new WebSocket("ws://127.0.0.1:9001");
+        _ws = new WebSocket("ws://" + document.location.host);
         _ws.onmessage = wsOnMessage;
         _ws.onclose = () => setTimeout(initSocket, 3000);
     }
@@ -393,7 +393,7 @@
             // the try to get the current mouse position
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 250)
-            fetch('http://127.0.0.1:9001/api/position', { signal: controller.signal })
+            fetch('/api/position', { signal: controller.signal })
                 .then(r => r.json())
                 .then(z => {
                     x = z.x;
@@ -404,7 +404,7 @@
 
     // overlay <-> agent <-> ocr
     function OCR(x, y, w, h, mode, cx, cy) {
-        return fetch('http://127.0.0.1:9001/api/ocr?mode=' + mode +
+        return fetch('/api/ocr?mode=' + mode +
             '&x=' + x +
             '&y=' + y +
             '&w=' + w +
@@ -418,8 +418,8 @@
                 if (s === '') return;
 
                 addTextItem(s);
-            }).catch(() => {
-                addTextLog('[Error] Unable to connect to ocr-server');
+            }).catch((e) => {
+                addTextLog('[Error] ocr-server:\n' + e.stack);
             });
     }
 
@@ -435,7 +435,7 @@
         const val = createTextItem(id, s, '');
         _divTextFlow.appendChild(val[0]);
 
-        fetch('http://127.0.0.1:9001/api/translate/?s=' + encodeURI(s))
+        fetch('/api/translate/?s=' + encodeURI(s))
             .then(r => r.text())
             .then(t => {
                 val[2].innerText = t;
@@ -526,6 +526,7 @@
             _options.otpColorSize++;
             _textView.style.setProperty('--text-view-font-size', _options.otpColorSize + 'px');
             saveOptions();
+            flowScroll();
         }
         inputColorOriginal.oninput = () => {
             const color = inputColorOriginal.value;
@@ -558,6 +559,7 @@
             _options[target.id] = checked;
             saveOptions();
             refeshVisibility();
+            flowScroll();
         }
         inputShowDiscordLock.parentElement.onclick = onClick;
         inputShowOverlayLock.parentElement.onclick = onClick;

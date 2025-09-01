@@ -6,6 +6,10 @@
 if (module.parent === null) {
     throw "I'm not a text hooker!";
 }
+const __e = Process.mainModule ?? Process.enumerateModules()[0];
+if (null !== (Process.platform === 'linux' ? Module.findExportByName(null, 'DotNetRuntimeInfo') : __e.findExportByName('DotNetRuntimeInfo'))) {
+    return module.exports = exports = require('./libRyujinx.js');
+}
 
 console.warn('[Compatibility]');
 console.warn('Yuzu 1616+');
@@ -17,9 +21,9 @@ const isVirtual = Process.arch === 'x64' && Process.platform === 'windows';
 let idxDescriptor = isVirtual === true ? 2 : 1;
 let idxEntrypoint = idxDescriptor + 1;
 const DoJitPtr = getDoJitAddress();
-const buildRegs = createFunction_buildRegs();
+const buildRegs = globalThis.ARM === true ? createFunction_buildRegs32() : createFunction_buildRegs();
 const operations = Object.create(null);
-
+let _operations = Object.create(null);
 //let EmitX64_vftable;
 /*
 https://github.com/merryhime/dynarmic/blob/e6f9b08d495449e4ca28882c0cb4f12d83fd4549/src/dynarmic/backend/x64/emit_x64.cpp
@@ -57,38 +61,47 @@ Interceptor.attach(DoJitPtr, {
         //const entrypoint_far = args[4];
         //const size = args[5];
 
-        const em_address = descriptor.readU64().toNumber();
+        const em_address = descriptor.readU64().and(0xFFFFFFFF).toNumber();
         const op = operations[em_address];
         if (op !== undefined && entrypoint.isNull() === false) {
             console.log('Attach:', ptr(em_address), entrypoint);
-            // Breakpoint.add (slower)
-            Breakpoint.add(entrypoint, function () {
-                const thiz = Object.create(null);
-                //thiz.returnAddress = 0;
-                thiz.context = Object.create(null);
-                thiz.context.pc = em_address;
-                //thiz.context.sp = 0;
-                const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
-                //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
-                op.call(thiz, regs);
+            jitAttach(em_address, entrypoint, op);
+            sessionStorage.setItem('Yuzu_' + Date.now(), {
+                guest: em_address,
+                host: entrypoint
             });
-
-            // // Interceptor.attach (detach = hook removed, but freeze)
-            // Interceptor.attach(entrypoint, {
-            //     onEnter: function () {
-            //         const thiz = Object.create(null);
-            //         //thiz.returnAddress = 0;
-            //         thiz.context = Object.create(null);
-            //         thiz.context.pc = em_address;
-            //         //thiz.context.sp = 0;
-            //         const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
-            //         //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
-            //         op.call(thiz, regs);
-            //     }
-            // });
         }
     }
 });
+
+function jitAttach(em_address, entrypoint, op) {
+    const thiz = Object.create(null);
+    //thiz.returnAddress = 0;
+    thiz.context = Object.create(null);
+    thiz.context.pc = em_address;
+
+    // Breakpoint.add (slower)
+    Breakpoint.add(entrypoint, function () {
+        //thiz.context.sp = 0;
+        const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
+        //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
+        op.call(thiz, regs);
+    });
+
+    // // Interceptor.attach (detach = hook removed, but freeze)
+    // Interceptor.attach(entrypoint, {
+    //     onEnter: function () {
+    //         const thiz = Object.create(null);
+    //         //thiz.returnAddress = 0;
+    //         thiz.context = Object.create(null);
+    //         thiz.context.pc = em_address;
+    //         //thiz.context.sp = 0;
+    //         const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
+    //         //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
+    //         op.call(thiz, regs);
+    //     }
+    // });
+}
 
 function getDoJitAddress() {
     if (Process.platform !== 'windows') {
@@ -108,8 +121,6 @@ function getDoJitAddress() {
         }
     }
     else {
-        const __e = Process.enumerateModules()[0];
-
         // Windows MSVC x64 2019 (v996-) + 2022 (v997+)
         const RegisterBlockSig1 = 'E8 ?? ?? ?? ?? 4? 8B ?? 4? 8B ?? 4? 8B ?? E8 ?? ?? ?? ?? 4? 89?? 4? 8B???? ???????? 4? 89?? ?? 4? 8B?? 4? 89';
         const RegisterBlock = Memory.scanSync(__e.base, __e.size, RegisterBlockSig1)[0];
@@ -224,22 +235,91 @@ function createFunction_buildRegs() {
     return new Function('context', 'thiz', body);
 };
 
+// https://github.com/merryhime/dynarmic/blob/master/src/dynarmic/backend/x64/a32_jitstate.h
+function createFunction_buildRegs32() {
+    let body = '';
+
+    /* fastmem */
+    // https://github.com/merryhime/dynarmic/blob/master/src/dynarmic/backend/x64/a32_interface.cpp#L48
+    body += 'const base = context.r13;';
+
+    // https://github.com/merryhime/dynarmic/blob/0c12614d1a7a72d778609920dde96a4c63074ece/src/dynarmic/backend/x64/a64_emit_x64.cpp#L481
+    body += 'const regs = context.r15;';
+
+    /* pagetable */
+    // https://github.com/merryhime/dynarmic/blob/0c12614d1a7a72d778609920dde96a4c63074ece/src/dynarmic/backend/x64/a64_emit_x64.cpp#L831
+
+    // arm32: 0->15 (r0->r15)
+    // arm64: 0->30 (x0->lr) + sp (x31) + pc (x32)
+    body += 'const args = [';
+    for (let i = 0; i < 16; i++) {
+        let offset = i * 4;
+        body += '{';
+        body += `_vm: regs.add(${offset}).readU32(),`;
+        body += `get value() { return base.add(this._vm); },`; // host address
+        body += `set vm(val) { this._vm = val; },`;
+        body += `get vm() { return this._vm },`;
+        body += `save() {regs.add(${offset}).writeU32(this._vm); return this; }`;
+        body += '},';
+    }
+    body += '];';
+
+    //body += 'thiz.context.pc = regs.add(60).readU32();'; // r15 0x3c 60
+    //body += 'thiz.context.sp = regs.add(52).readU32();'; // r13 0x34 52; useless?
+    body += 'thiz.returnAddress = regs.add(56).readU32();'; // r14 0x38 56; lr
+    body += 'thiz.context.lr = args[14];';
+    body += 'thiz.context.fp = args[11];'; // r11 (FP): Frame pointer.
+    body += 'thiz.context.sp = args[13];'; // r13
+
+    body += 'return args;';
+    return new Function('context', 'thiz', body);
+}
+
 /**
  * 
  * @param {EmulatorHook} object
  */
-function setHook(object) {
+function setHook(object, dfVer) {
+    if (dfVer !== undefined) {
+        _operations = object;
+        object = object[dfVer];
+    }
+    else {
+        _operations = {
+            [globalThis.gameVer]: object
+        };
+    }
+
     //console.log(JSON.stringify(object, null, 2));
     const IS_32 = globalThis.ARM === true;
     for (const key in object) {
         if (Object.hasOwnProperty.call(object, key)) {
+            if (key.startsWith('H')) {
+                console.error("Skip: " + key + ', this hashCode is not implementd, try Ryujinx.');
+                continue;
+            }
             const element = object[key];
-            const address = IS_32 === true ? key : uint64(key).add(0x80004000).toNumber();
-            operations[address] = element;
+            const address = IS_32 === true ? uint64(key).add(0x204000) : uint64(key).add(0x80004000);
+            operations[address.toString(10)] = element;
         }
     }
 
     if (globalThis.gameVer) console.warn('Game version: ' + globalThis.gameVer);
+
+    Object.keys(sessionStorage).map(key => {
+        const value = sessionStorage.getItem(key);
+        if (key.startsWith('Yuzu_') === true) {
+            try {
+                const em_address = value.guest;
+                const entrypoint = ptr(value.host);
+                const op = operations[em_address.toString(10)];
+                jitAttach(em_address, entrypoint, op);
+            }
+            catch (e) {
+                console.error(e);
+            }
+        }
+    });
 }
 
 module.exports = exports = {

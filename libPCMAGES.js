@@ -13,6 +13,9 @@ if (module.parent === null) {
     throw "I'm not a text hooker!";
 }
 
+
+const Is4BytesEncoding = globalThis.Is4BytesEncoding;
+
 /**
  * Mail: inbox, outbox, send
  * @param {NativePointer} address 
@@ -29,9 +32,19 @@ function readString(address, table, isOut) {
             continue;
         }
         if (c >= 0x80) {  // readChar
-            const charCode = address.readU16();
-            address = address.add(2);
-            s += mages_decode(charCode, table);
+            if (!Is4BytesEncoding)
+            {
+                const charCode = address.readU16();
+                address = address.add(2);
+
+                s += mages_decode(charCode, table);
+            }
+            else {
+                const charCode = address.readU32();
+                address = address.add(4);
+                
+                s += mages_decode(charCode, table);
+            }
         }
         else { // readControl
             address = address.add(1);
@@ -50,10 +63,18 @@ function readString(address, table, isOut) {
                         address = address.add(1);
                     }
                     else {
-                        const charCode = address.readU16();
-                        address = address.add(2);
+                        if (!Is4BytesEncoding)
+                        {
+                            const charCode = address.readU16();
+                            address = address.add(2);
 
-                        bottom += mages_decode(charCode, table);
+                            bottom += mages_decode(charCode, table);
+                        }
+                        else {
+                            const charCode = address.readU32();
+                            address = address.add(4);
+                            bottom += mages_decode(charCode, table);
+                        }
                     }
                 }
 
@@ -122,10 +143,19 @@ function readString(address, table, isOut) {
                                 address = address.add(1);
                             }
                             else { // rubi
-                                const charCode = address.readU16();
-                                address = address.add(2);
+                                if (!Is4BytesEncoding)
+                                {
+                                    const charCode = address.readU16();
+                                    address = address.add(2);
 
-                                rubi += mages_decode(charCode, table);
+                                    rubi += mages_decode(charCode, table);
+                                }
+                                else {
+                                    const charCode = address.readU32();
+                                    address = address.add(4);
+
+                                    rubi += mages_decode(charCode, table);
+                                }
                             }
                         } // end while
                     }
@@ -137,10 +167,19 @@ function readString(address, table, isOut) {
                         address = address.add(1);
                     }
                     else { // char (text)
-                        const charCode = address.readU16();
-                        address = address.add(2);
+                        if (!Is4BytesEncoding)
+                        {
+                            const charCode = address.readU16();
+                            address = address.add(2);
 
-                        c = mages_decode(charCode, table);
+                            c = mages_decode(charCode, table);
+                        }
+                        else {
+                            const charCode = address.readU32();
+                            address = address.add(4);
+
+                            c = mages_decode(charCode, table);
+                        }
                         bottom += c;
                         s += c;
                     }
@@ -149,6 +188,14 @@ function readString(address, table, isOut) {
                     console.log('rubi: ', rubi);
                     console.log('char: ', bottom);
                 }
+            }
+            else if (c === 0x20) {
+                s += "LastName";
+                address = address.add(1);
+            }
+            else if (c === 0x21) {
+                s += "FirstName";
+                address = address.add(1);
             }
             else {
                 // do nothing (one byte control)
@@ -187,6 +234,9 @@ function setHookDialog(callback) {
     let hookAddress = ins.opStr;         // 0x431d57 (mov mem, reg)
     pos = ins.next;
 
+    let nextAddress = pos;
+    let argx = -1;
+
     // find expressions: mov al, byte ptr ds:[reg] => reg
     let expr = '';
     for (let index = 0; index < 200; index++) {
@@ -206,10 +256,39 @@ function setHookDialog(callback) {
         return null;
     }
 
-    console.log('Attach Dialog:', hookAddress, expr);
-    Breakpoint.add(ptr(hookAddress), function () {
-        callback.call(this, this.context, expr);
-    });
+    // check expr: mov reg, dword ptr ss:[esp+0x14]; 8B5C24 14
+    while (nextAddress.compare(pos) !== 0) {
+        ins = Instruction.parse(nextAddress);
+        if (ins.mnemonic === 'mov' && ins.size === 4
+            && ins.operands[0].type === 'reg' && ins.operands[0].value === expr
+            && ins.operands[1].type === 'mem') {
+            console.log(JSON.stringify(ins, null, 2));
+            if (ins.operands[1].value.base === 'esp') {
+                argx = ins.operands[1].value.disp >> 2; // div by 4
+            }
+        }
+        nextAddress = ins.next;
+    }
+
+    if (argx === -1) {
+        console.log('Attach Dialog:', hookAddress, expr);
+        Breakpoint.add(ptr(hookAddress), function () {
+            callback.call(this, this.context, expr);
+        });
+    }
+    else {
+        console.log('Attach Dialog:', hookAddress, expr, argx);
+        const disp = argx << 2;
+        Breakpoint.add(ptr(hookAddress), function () {
+            const ctx = this.context;
+            Object.defineProperty(ctx, argx, {
+                get() {
+                    return ctx.esp.add(disp).readPointer();
+                }
+            });
+            callback.call(this, ctx, argx);
+        });
+    }
 
     return hookAddress;
 }
@@ -229,7 +308,7 @@ function setHookDialog64(callback) {
     let ins = Instruction.parse(pos);    // parse (je 0x431d57)
     pos = ins.next;
     let hookAddress = ins.opStr;         // 0x431d57 (mov mem, reg)
-    
+
     //// 2nd je have more (computer-system; but include previous dialogue too; check r10=0?unableFilter?)
     //// like hook at top function 
     // ins = Instruction.parse(pos); // cmp reg, 1
@@ -237,7 +316,7 @@ function setHookDialog64(callback) {
     // ins = Instruction.parse(pos); // jp 0xAD
     // pos = ins.next;
     // let hookAddress = ins.opStr;  // 0xAD
-    
+
     // find expressions: movzx edx, byte ptr ds:[reg] => reg
     let expr = '';
     for (let index = 0; index < 200; index++) {
@@ -260,7 +339,7 @@ function setHookDialog64(callback) {
     console.log('Attach Dialog:', hookAddress, expr);
     Breakpoint.add(ptr(hookAddress), function () {
         callback.call(this, this.context, expr);
-        
+
     });
 
     return hookAddress;
@@ -317,6 +396,6 @@ function setHookMail(table, cb) {
 
 module.exports = exports = {
     readString,
-    setHookDialog: Process.arch === 'x64' ? setHookDialog64: setHookDialog,
+    setHookDialog: Process.arch === 'x64' ? setHookDialog64 : setHookDialog,
     setHookMail
 }

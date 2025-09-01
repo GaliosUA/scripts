@@ -1,5 +1,5 @@
 // @name         PPSSPP JIT Hooker
-// @version      1.12.3-867 -> v1.16.1-35
+// @version      1.12.3-867 -> 1.18.1-1464
 // @author       [DC]
 // @description  windows, linux, mac (x64, arm64), android (arm64)
 
@@ -7,7 +7,7 @@ if (module.parent === null) {
     throw "I'm not a text hooker!";
 }
 console.warn('[Compatibility]');
-console.warn('PPSSPP 1.12.3-867 -> v1.16.1-35');
+console.warn('PPSSPP v1.12.3-867 -> v1.18.1-1464');
 console.log('[Mirror] Download: https://github.com/koukdw/emulators/releases');
 
 const DoJitPtr = getDoJitAddress();
@@ -30,19 +30,31 @@ Interceptor.attach(DoJitPtr, {
         const op = operations[em_address];
         if (op !== undefined) {
             console.log('Attach:', ptr(em_address), entrypoint);
-            if (breakpoints[entrypoint] !== undefined) return console.log('Skip');
-            breakpoints[entrypoint] = em_address;
-            Breakpoint.add(entrypoint, function () {
-                const thiz = Object.create(null);
-                thiz.context = Object.create(null);
-                thiz.context.pc = em_address;
-                const regs = buildRegs(this.context, thiz); // a0 a1 a2 ...
-                //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
-                op.call(thiz, regs);
-            });
+            if (jitAttach(em_address, entrypoint, op) === true) {
+                sessionStorage.setItem('PSP_' + Date.now(), {
+                    guest: em_address,
+                    host: entrypoint
+                });
+            }
         }
     }
 });
+
+function jitAttach(em_address, entrypoint, op) {
+    if (breakpoints[entrypoint] !== undefined) return console.log('Skip');
+    breakpoints[entrypoint] = em_address;
+
+    const thiz = Object.create(null);
+    thiz.context = Object.create(null);
+    thiz.context.pc = em_address;
+    Breakpoint.add(entrypoint, function () {
+        const regs = buildRegs(this.context, thiz); // a0 a1 a2 ...
+        //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
+        op.call(thiz, regs);
+    });
+
+    return true;
+}
 
 function getDoJitAddress() {
     if (Process.platform !== 'windows') {
@@ -67,15 +79,18 @@ function getDoJitAddress() {
         // Windows MSVC x64
         // TODO: retroarch, DebugSymbol.fromName?
         const __e = Process.enumerateModules()[0];
-        const DoJitSig1 = 'C7 83 ?? 0? 00 00 11 00 00 00 F6 83 ?? 0? 00 00 01 C7 83 ?? 0? 00 00 E4 00 00 00';
+        // const DoJitSig1 = 'C7 83 ?? 0? 00 00 11 00 00 00 F6 83 ?? 0? 00 00 01 C7 83 ?? 0? 00 00 E4 00 00 00';
+        const DoJitSig1 = 'C7 83 ?? 0? 00 00 11 00 00 00 F6 83 ?? 0? 00 00 01';
         const first = Memory.scanSync(__e.base, __e.size, DoJitSig1)[0];
+
         if (first) {
-            const beginSubSig1 = '55 41 ?? 41 ?? 41';
+            // const beginSubSig1 = '55 41 ?? 41 ?? 41';
+            const beginSubSig1 = "CC 4? 89 ?? 24";
             const lookbackSize = 0x100;
             const address = first.address.sub(lookbackSize);
             const subs = Memory.scanSync(address, lookbackSize, beginSubSig1);
             if (subs.length !== 0) {
-                return subs[subs.length - 1].address;
+                return subs[subs.length - 1].address.add(1);
             }
         };
     }
@@ -208,6 +223,22 @@ function setHook(object) {
             operations[key] = element;
         }
     }
+
+    Object.keys(sessionStorage).map(key => {
+        const value = sessionStorage.getItem(key);
+        if (key.startsWith('PSP_') === true) {
+            try {
+                const em_address = value.guest;
+                const entrypoint = ptr(value.host);
+                const op = operations[em_address.toString(10)];
+                console.warn('Re-Attach: ' + ptr(em_address) + ' ' + entrypoint);
+                jitAttach(em_address, entrypoint, op);
+            }
+            catch (e) {
+                console.error(e);
+            }
+        }
+    });
 }
 
 module.exports = exports = {

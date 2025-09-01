@@ -1,5 +1,5 @@
 // @name         Vita3k JIT Hooker
-// @version      0.1.9 3520+ -
+// @version      0.2.0 3742+ -
 // @author       [DC]
 // @description  windows, linux, macOS (x64)
 
@@ -8,7 +8,7 @@ if (module.parent === null) {
 }
 
 console.warn('[Compatibility]');
-console.warn('Vita3k 0.1.9 3520+');
+console.warn('Vita3k 0.2.0 3742+');
 console.log('[Mirror] Download: https://github.com/koukdw/emulators/releases');
 
 const buildRegs = createFunction_buildRegs();
@@ -38,23 +38,32 @@ Interceptor.attach(DoJitPtr, {
         const op = operations[em_address];
         if (op !== undefined) {
             console.log('Attach:', ptr(em_address), entrypoint);
-            Breakpoint.add(entrypoint, function () {
-                const thiz = Object.create(null);
-                thiz.context = Object.create(null);
-                thiz.context.pc = em_address;
-                const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
-                //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
-                op.call(thiz, regs);
+            jitAttach(em_address, entrypoint, op);
+            sessionStorage.setItem('PSVita_' + Date.now(), {
+                guest: em_address,
+                host: entrypoint
             });
         }
     },
 });
+
+function jitAttach(em_address, entrypoint, op) {
+    const thiz = Object.create(null);
+    thiz.context = Object.create(null);
+    thiz.context.pc = em_address;
+    Breakpoint.add(entrypoint, function () {
+        const regs = buildRegs(this.context, thiz); // x0 x1 x2 ...
+        //console.log(JSON.stringify(thiz, (_, value) => { return typeof value === 'number' ? '0x' + value.toString(16) : value; }, 2));
+        op.call(thiz, regs);
+    });
+}
 
 function getDoJitAddress() {
     if (Process.platform !== 'windows') {
         // Unix
         // not _ZN8Dynarmic7Backend3X647EmitX6413RegisterBlockERKNS_2IR18LocationDescriptorEPKvS8_m.cold
         const names = [
+            '_ZN8Dynarmic7Backend3X647EmitX6413RegisterBlockERKNS_2IR18LocationDescriptorEPKvm', // linux 64 new
             '_ZN8Dynarmic7Backend3X647EmitX6413RegisterBlockERKNS_2IR18LocationDescriptorEPKvS8_m', // linux x64
             // __ZN8Dynarmic7Backend3X647EmitX6413RegisterBlockERKNS_2IR18LocationDescriptorEPKvS8_m
             'Dynarmic::Backend::X64::EmitX64::RegisterBlock(Dynarmic::IR::LocationDescriptor const&, void const*, void const*, unsigned long)', // macOS x64 (demangle)
@@ -84,7 +93,7 @@ function getDoJitAddress() {
             return symbols[0];
         }
 
-        const PatchBlockSig1 = '4C 8B DC 49 89 5B ?? 49 89 6B ?? 56 57 41 54 41 56 41 57';
+        const PatchBlockSig1 = '4C 8B DC 49 89 5B ?? 49 89 6B ?? 56 57 41 54 41 56 41 57 48 83';
         first = Memory.scanSync(__e.base, __e.size, PatchBlockSig1)[0];
         if (first) {
             console.warn('Sig Patch');
@@ -144,6 +153,22 @@ function setHook(object) {
             operations[key] = element;
         }
     }
+
+    Object.keys(sessionStorage).map(key => {
+        const value = sessionStorage.getItem(key);
+        if (key.startsWith('PSVita_') === true) {
+            try {
+                const em_address = value.guest;
+                const entrypoint = ptr(value.host);
+                const op = operations[em_address.toString(10)];
+                console.warn('Re-Attach: ' + ptr(em_address) + ' ' + entrypoint);
+                jitAttach(em_address, entrypoint, op);
+            }
+            catch (e) {
+                console.error(e);
+            }
+        }
+    });
 }
 
 module.exports = exports = {
